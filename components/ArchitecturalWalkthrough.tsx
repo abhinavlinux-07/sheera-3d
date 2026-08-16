@@ -15,6 +15,7 @@ export default function ArchitecturalWalkthrough() {
   const [chapterProgress, setChapterProgress] = useState(0);
   const [isLoadedInitial, setIsLoadedInitial] = useState(false);
   const [loadingPercent, setLoadingPercent] = useState(0);
+  const [currentFrameSrc, setCurrentFrameSrc] = useState<string>('/walkthrough/01-arrival/001.jpg');
 
   // In-memory HTMLImageElement cache and active in-flight promises
   const imageCacheRef = useRef<Map<string, HTMLImageElement>>(new Map());
@@ -22,7 +23,6 @@ export default function ArchitecturalWalkthrough() {
   const lastRenderedImgRef = useRef<HTMLImageElement | null>(null);
   const activeFrameRef = useRef<{ chapterIdx: number; frameIdx: number }>({ chapterIdx: 0, frameIdx: 0 });
   const currentChapterIndexRef = useRef<number>(0);
-  const rafIdRef = useRef<number | null>(null);
 
   // Helper to format frame filename e.g. /walkthrough/01-arrival/001.jpg
   const getFramePath = useCallback((chapterPath: string, frameNumber: number) => {
@@ -73,56 +73,55 @@ export default function ArchitecturalWalkthrough() {
     []
   );
 
-  // High performance Canvas Renderer
-  const renderFrameOnCanvas = useCallback(
-    (img: HTMLImageElement) => {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const ctx = canvas.getContext('2d', { alpha: false });
-      if (!ctx) return;
+  // High performance Full-Bleed Cover Canvas Renderer
+  const renderFrameOnCanvas = useCallback((img: HTMLImageElement) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d', { alpha: false });
+    if (!ctx) return;
 
-      if (!img.complete || img.naturalWidth === 0) return;
+    if (!img.complete || img.naturalWidth === 0) return;
 
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      const width = window.innerWidth;
-      const height = window.innerHeight;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const width = canvas.clientWidth || window.innerWidth;
+    const height = canvas.clientHeight || window.innerHeight;
 
-      if (canvas.width !== width * dpr || canvas.height !== height * dpr) {
-        canvas.width = width * dpr;
-        canvas.height = height * dpr;
-      }
+    if (width <= 0 || height <= 0) return;
 
-      ctx.save();
-      ctx.scale(dpr, dpr);
+    if (canvas.width !== width * dpr || canvas.height !== height * dpr) {
+      canvas.width = width * dpr;
+      canvas.height = height * dpr;
+    }
 
-      const naturalW = img.naturalWidth || 1280;
-      const naturalH = img.naturalHeight || 720;
-      const imgAspect = naturalW / naturalH;
-      const canvasAspect = width / height;
+    ctx.save();
+    ctx.scale(dpr, dpr);
 
-      let drawW: number;
-      let drawH: number;
+    const naturalW = img.naturalWidth || 1280;
+    const naturalH = img.naturalHeight || 720;
+    const imgAspect = naturalW / naturalH;
+    const canvasAspect = width / height;
 
-      if (canvasAspect > imgAspect) {
-        drawW = width;
-        drawH = width / imgAspect;
-      } else {
-        drawH = height;
-        drawW = height * imgAspect;
-      }
+    let drawW: number;
+    let drawH: number;
 
-      const offsetX = (width - drawW) / 2;
-      const offsetY = (height - drawH) / 2;
+    if (canvasAspect > imgAspect) {
+      drawW = width;
+      drawH = width / imgAspect;
+    } else {
+      drawH = height;
+      drawW = height * imgAspect;
+    }
 
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(img, offsetX, offsetY, drawW, drawH);
-      ctx.restore();
+    const offsetX = (width - drawW) / 2;
+    const offsetY = (height - drawH) / 2;
 
-      lastRenderedImgRef.current = img;
-    },
-    []
-  );
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, offsetX, offsetY, drawW, drawH);
+    ctx.restore();
+
+    lastRenderedImgRef.current = img;
+  }, []);
 
   // Chapter-Aware Frame Resolver & Canvas Renderer
   const drawCurrentFrame = useCallback(() => {
@@ -140,7 +139,7 @@ export default function ArchitecturalWalkthrough() {
       loadSingleFrame(targetPath, 'high').catch(() => {});
 
       // Preload immediate surrounding frames in direction of scroll
-      for (let offset = 1; offset <= 6; offset++) {
+      for (let offset = 1; offset <= 8; offset++) {
         const ahead = Math.min(currentSec.frameCount, frameNum + offset);
         const aheadPath = getFramePath(currentSec.path, ahead);
         if (!imageCacheRef.current.has(aheadPath)) {
@@ -187,14 +186,17 @@ export default function ArchitecturalWalkthrough() {
     const finalImg = imgToDraw || lastRenderedImgRef.current;
     if (finalImg) {
       renderFrameOnCanvas(finalImg);
+      if (finalImg.src && finalImg.src !== currentFrameSrc) {
+        setCurrentFrameSrc(finalImg.src);
+      }
     }
-  }, [getFramePath, loadSingleFrame, renderFrameOnCanvas]);
+  }, [getFramePath, loadSingleFrame, renderFrameOnCanvas, currentFrameSrc]);
 
   useEffect(() => {
     drawCurrentFrameRef.current = drawCurrentFrame;
   }, [drawCurrentFrame]);
 
-  // Priority Preloader & Uniform Keyframe Pipeline
+  // Priority Preloader Pipeline prioritizing 2.zip (02-entry) and all chapters
   useEffect(() => {
     let isMounted = true;
 
@@ -209,7 +211,7 @@ export default function ArchitecturalWalkthrough() {
             await loadSingleFrame(path, 'high');
             loadedAnchors++;
             if (isMounted) {
-              setLoadingPercent(Math.round((loadedAnchors / anchorPaths.length) * 50));
+              setLoadingPercent(Math.round((loadedAnchors / anchorPaths.length) * 40));
             }
           } catch (e) {
             console.warn('Anchor load error:', path);
@@ -217,46 +219,43 @@ export default function ArchitecturalWalkthrough() {
         })
       );
 
-      // Force initial render of Chapter 1 anchor frame immediately
+      // Force immediate render of initial anchor frame
       drawCurrentFrame();
+
+      // Step 2: High-priority eager load ALL frames for Chapter 02 (2.zip - entry) and Chapter 01 (1.zip - arrival)
+      const topPrioritySections = [walkthroughSections[1], walkthroughSections[0], walkthroughSections[2]];
+      for (const sec of topPrioritySections) {
+        if (!sec || !isMounted) continue;
+        const framePaths: string[] = [];
+        for (let f = 1; f <= sec.frameCount; f++) {
+          framePaths.push(getFramePath(sec.path, f));
+        }
+        for (let i = 0; i < framePaths.length; i += 12) {
+          if (!isMounted) return;
+          const batch = framePaths.slice(i, i + 12);
+          await Promise.all(batch.map((p) => loadSingleFrame(p, 'high').catch(() => {})));
+          await new Promise((r) => setTimeout(r, 10));
+        }
+      }
 
       if (isMounted) {
         setIsLoadedInitial(true);
         setLoadingPercent(100);
       }
 
-      // Step 2: Interleaved Keyframe Preloading across ALL chapters (every 10th frame first, then 5th, then 2nd)
-      // Interleaving ensures EVERY chapter has distributed keyframes ready immediately!
-      const keyframeSteps = [10, 5, 2];
-      for (const step of keyframeSteps) {
-        for (let secIdx = 0; secIdx < walkthroughSections.length; secIdx++) {
-          if (!isMounted) return;
-          const sec = walkthroughSections[secIdx];
-          const isCurrentSec = secIdx === currentChapterIndexRef.current;
-
-          for (let f = 1; f <= sec.frameCount; f += step) {
-            if (!isMounted) return;
-            const path = getFramePath(sec.path, f);
-            if (!imageCacheRef.current.has(path)) {
-              loadSingleFrame(path, isCurrentSec ? 'high' : 'auto').catch(() => {});
-            }
-          }
-          await new Promise((r) => setTimeout(r, 10));
-        }
-      }
-
-      // Step 3: Complete remaining frame buffer in background
-      for (let secIdx = 0; secIdx < walkthroughSections.length; secIdx++) {
+      // Step 3: Complete remaining chapters in background (04-bedroom-retreat, 05-retreat-bathroom)
+      for (let secIdx = 3; secIdx < walkthroughSections.length; secIdx++) {
+        if (!isMounted) return;
         const sec = walkthroughSections[secIdx];
-        for (let frameNum = 1; frameNum <= sec.frameCount; frameNum++) {
+        const framePaths: string[] = [];
+        for (let f = 1; f <= sec.frameCount; f++) {
+          framePaths.push(getFramePath(sec.path, f));
+        }
+        for (let i = 0; i < framePaths.length; i += 15) {
           if (!isMounted) return;
-          const path = getFramePath(sec.path, frameNum);
-          if (!imageCacheRef.current.has(path)) {
-            loadSingleFrame(path, 'low').catch(() => {});
-            if (frameNum % 15 === 0) {
-              await new Promise((r) => setTimeout(r, 10));
-            }
-          }
+          const batch = framePaths.slice(i, i + 15);
+          await Promise.all(batch.map((p) => loadSingleFrame(p, 'auto').catch(() => {})));
+          await new Promise((r) => setTimeout(r, 15));
         }
       }
     }
@@ -274,18 +273,18 @@ export default function ArchitecturalWalkthrough() {
     const sec = walkthroughSections[currentChapterIndex];
     if (!sec) return;
 
-    // Immediately high-priority load keyframes for active chapter
-    for (let i = 1; i <= sec.frameCount; i += 2) {
+    // High-priority load frames for active chapter
+    for (let i = 1; i <= sec.frameCount; i++) {
       const path = getFramePath(sec.path, i);
       if (!imageCacheRef.current.has(path)) {
         loadSingleFrame(path, 'high').catch(() => {});
       }
     }
 
-    // High-priority load keyframes for next chapter
+    // High-priority load frames for next chapter
     const nextSec = walkthroughSections[currentChapterIndex + 1];
     if (nextSec) {
-      for (let i = 1; i <= nextSec.frameCount; i += 4) {
+      for (let i = 1; i <= nextSec.frameCount; i += 2) {
         const path = getFramePath(nextSec.path, i);
         if (!imageCacheRef.current.has(path)) {
           loadSingleFrame(path, 'high').catch(() => {});
@@ -293,10 +292,10 @@ export default function ArchitecturalWalkthrough() {
       }
     }
 
-    // High-priority load keyframes for previous chapter
+    // High-priority load frames for previous chapter
     const prevSec = walkthroughSections[currentChapterIndex - 1];
     if (prevSec) {
-      for (let i = 1; i <= prevSec.frameCount; i += 4) {
+      for (let i = 1; i <= prevSec.frameCount; i += 2) {
         const path = getFramePath(prevSec.path, i);
         if (!imageCacheRef.current.has(path)) {
           loadSingleFrame(path, 'auto').catch(() => {});
@@ -304,61 +303,84 @@ export default function ArchitecturalWalkthrough() {
       }
     }
 
-    // Trigger immediate canvas redraw for chapter change
+    // Trigger immediate canvas & img redraw for chapter change
     drawCurrentFrame();
   }, [currentChapterIndex, getFramePath, loadSingleFrame, drawCurrentFrame]);
 
-  // Handle Scroll Progress & Sync Active Frame
-  const handleScroll = useCallback(() => {
-    if (!containerRef.current) return;
-
-    const rect = containerRef.current.getBoundingClientRect();
-    const totalScrollableHeight = rect.height - window.innerHeight;
-
-    if (totalScrollableHeight <= 0) return;
-
-    const currentScrollY = -rect.top;
-    const progress = Math.max(0, Math.min(1, currentScrollY / totalScrollableHeight));
-
-    setGlobalProgress(progress);
-
-    // 5 chapters mapping: 0.00-0.20, 0.20-0.40, 0.40-0.60, 0.60-0.80, 0.80-1.00
-    const numChapters = walkthroughSections.length;
-    const chapterPortion = 1 / numChapters;
-
-    let rawChapterIdx = Math.floor(progress / chapterPortion);
-    if (rawChapterIdx >= numChapters) rawChapterIdx = numChapters - 1;
-
-    const cStart = rawChapterIdx * chapterPortion;
-    const cProgress = Math.max(0, Math.min(1, (progress - cStart) / chapterPortion));
-
-    setCurrentChapterIndex(rawChapterIdx);
-    setChapterProgress(cProgress);
-
-    const chapterObj = walkthroughSections[rawChapterIdx];
-    const computedFrameIdx = Math.floor(cProgress * (chapterObj.frameCount - 1));
-
-    activeFrameRef.current = {
-      chapterIdx: rawChapterIdx,
-      frameIdx: Math.max(0, Math.min(chapterObj.frameCount - 1, computedFrameIdx)),
-    };
-
-    if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current);
-    rafIdRef.current = requestAnimationFrame(drawCurrentFrame);
-  }, [drawCurrentFrame]);
+  // Continuous RAF Scroll Sync Loop with State Guard to prevent 60FPS component thrashing
+  const lastStateRef = useRef<{ globalProgress: number; chapterIndex: number; chapterProgress: number }>({
+    globalProgress: -1,
+    chapterIndex: -1,
+    chapterProgress: -1,
+  });
 
   useEffect(() => {
-    window.addEventListener('scroll', handleScroll, { passive: true });
-    window.addEventListener('resize', drawCurrentFrame);
+    let animFrameId: number;
 
-    handleScroll();
+    const syncScrollState = () => {
+      if (containerRef.current) {
+        const rect = containerRef.current.getBoundingClientRect();
+        const totalScrollableHeight = rect.height - window.innerHeight;
+
+        if (totalScrollableHeight > 0) {
+          const currentScrollY = -rect.top;
+          const progress = Math.max(0, Math.min(1, currentScrollY / totalScrollableHeight));
+
+          const numChapters = walkthroughSections.length;
+          const chapterPortion = 1 / numChapters;
+
+          let rawChapterIdx = Math.floor(progress / chapterPortion);
+          if (rawChapterIdx >= numChapters) rawChapterIdx = numChapters - 1;
+
+          const cStart = rawChapterIdx * chapterPortion;
+          const cProgress = Math.max(0, Math.min(1, (progress - cStart) / chapterPortion));
+
+          // Only trigger React state updates when state values meaningfully change
+          if (Math.abs(lastStateRef.current.globalProgress - progress) > 0.005) {
+            lastStateRef.current.globalProgress = progress;
+            setGlobalProgress(progress);
+          }
+
+          if (lastStateRef.current.chapterIndex !== rawChapterIdx) {
+            lastStateRef.current.chapterIndex = rawChapterIdx;
+            setCurrentChapterIndex(rawChapterIdx);
+          }
+
+          if (Math.abs(lastStateRef.current.chapterProgress - cProgress) > 0.01) {
+            lastStateRef.current.chapterProgress = cProgress;
+            setChapterProgress(cProgress);
+          }
+
+          const chapterObj = walkthroughSections[rawChapterIdx];
+          const computedFrameIdx = Math.floor(cProgress * (chapterObj.frameCount - 1));
+
+          activeFrameRef.current = {
+            chapterIdx: rawChapterIdx,
+            frameIdx: Math.max(0, Math.min(chapterObj.frameCount - 1, computedFrameIdx)),
+          };
+
+          if (drawCurrentFrameRef.current) {
+            drawCurrentFrameRef.current();
+          }
+        }
+      }
+      animFrameId = requestAnimationFrame(syncScrollState);
+    };
+
+    animFrameId = requestAnimationFrame(syncScrollState);
+
+    const handleResize = () => {
+      if (drawCurrentFrameRef.current) {
+        drawCurrentFrameRef.current();
+      }
+    };
+    window.addEventListener('resize', handleResize);
 
     return () => {
-      window.removeEventListener('scroll', handleScroll);
-      window.removeEventListener('resize', drawCurrentFrame);
-      if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current);
+      cancelAnimationFrame(animFrameId);
+      window.removeEventListener('resize', handleResize);
     };
-  }, [handleScroll, drawCurrentFrame]);
+  }, []);
 
   // Direct Chapter Jump Handler for Side Navigation
   const scrollToChapter = (index: number) => {
@@ -382,10 +404,19 @@ export default function ArchitecturalWalkthrough() {
     >
       {/* Sticky Full-Bleed Viewport */}
       <div className="sticky top-0 left-0 w-full h-screen overflow-hidden z-10 bg-[#0E0D0C]">
-        {/* Canvas Engine */}
+        {/* Dual-Layer Backup Image Element */}
+        {currentFrameSrc && (
+          <img
+            src={currentFrameSrc}
+            alt="Architectural View"
+            className="absolute inset-0 w-full h-full object-cover select-none pointer-events-none z-0"
+          />
+        )}
+
+        {/* Primary Canvas Engine */}
         <canvas
           ref={canvasRef}
-          className="absolute inset-0 w-full h-full block select-none pointer-events-none"
+          className="absolute inset-0 w-full h-full block select-none pointer-events-none z-1"
         />
 
         {/* Initial Loading Overlay */}
@@ -426,3 +457,5 @@ export default function ArchitecturalWalkthrough() {
     </section>
   );
 }
+
+
